@@ -1,3 +1,4 @@
+import { asc } from 'drizzle-orm';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createTestDatabase } from '../../db/test-helpers';
 import { categories, publishers, games } from '../../db/schema';
@@ -5,6 +6,7 @@ import type { Database } from './db';
 import {
     getAllGames,
     getAllGameIds,
+    getFilteredGames,
     getGameById,
 } from './games';
 
@@ -62,5 +64,62 @@ describe('games data-access helpers', () => {
     it('returns null for a non-existent game', async () => {
         await seedGames(db, 2);
         expect(await getGameById(db, 99999)).toBeNull();
+    });
+
+    it('filters games by category and publisher together', async () => {
+        const [strategy] = await db
+            .insert(categories)
+            .values([
+                { name: 'Strategy', description: 'strategy games' },
+                { name: 'Puzzle', description: 'puzzle games' },
+            ])
+            .returning({ id: categories.id, name: categories.name });
+        const [publisher] = await db
+            .insert(publishers)
+            .values([
+                { name: 'Pub One', description: 'first publisher' },
+                { name: 'Pub Two', description: 'second publisher' },
+            ])
+            .returning({ id: publishers.id, name: publishers.name });
+        const categoryRows = await db.select().from(categories).orderBy(asc(categories.name));
+        const publisherRows = await db.select().from(publishers).orderBy(asc(publishers.name));
+
+        await db.insert(games).values([
+            {
+                title: 'Puzzle One',
+                description: 'Puzzle',
+                starRating: 4.1,
+                categoryId: categoryRows.find((row) => row.name === 'Puzzle')!.id,
+                publisherId: publisherRows.find((row) => row.name === 'Pub One')!.id,
+            },
+            {
+                title: 'Strategy One',
+                description: 'Strategy',
+                starRating: 4.5,
+                categoryId: strategy.id,
+                publisherId: publisher.id,
+            },
+            {
+                title: 'Strategy Two',
+                description: 'Strategy',
+                starRating: 4.3,
+                categoryId: strategy.id,
+                publisherId: publisherRows.find((row) => row.name === 'Pub Two')!.id,
+            },
+        ]);
+
+        const filtered = await getFilteredGames(db, {
+            categoryIds: [strategy.id],
+            publisherId: publisher.id,
+        });
+
+        expect(filtered.map((game) => game.title)).toEqual(['Strategy One']);
+    });
+
+    it('returns all games when filters are omitted and none when a selection has no matches', async () => {
+        await seedGames(db, 2);
+
+        expect((await getFilteredGames(db)).map((game) => game.title)).toEqual(['Game 01', 'Game 02']);
+        expect(await getFilteredGames(db, { categoryIds: [99999] })).toEqual([]);
     });
 });
